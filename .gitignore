@@ -2,147 +2,55 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-
-# C extensions
-*.dll
-*.dylib
 
 # Distribution / packaging
-.Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
 
-# Unit test / coverage reports
+# Test and coverage
+.pytest_cache/
+.coverage
+.coverage.*
 htmlcov/
 .tox/
 .nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
 coverage.xml
 *.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff (not used here, but standard):
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-# .python-version is intentionally NOT ignored — it pins the project Python version
-
-# pipenv
-Pipfile.lock
-
-# poetry
-poetry.lock
-
-# pdm
-.pdm.toml
-.pdm-python
-.pdm-build/
-
-# PEP 582
-__pypackages__/
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
+# Type checkers
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Pyre type checker
 .pyre/
-
-# pytype static type analyzer
 .pytype/
 
-# Cython debug symbols
-cython_debug/
-
-# PyCharm / IntelliJ
-.idea/
-*.iml
-
-# VS Code
+# IDE / editor
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# OS files
+# OS-generated
 .DS_Store
 Thumbs.db
 
-# Generated PDFs (transient runtime outputs only — the historical
-# `Student Report Generator Javascript Pdf.pdf` is tracked explicitly)
-/*_Report.pdf
+# Generated PDFs (runtime output; the historical artifact is kept explicitly)
+*.pdf
+!Student Report Generator Javascript Pdf.pdf
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
