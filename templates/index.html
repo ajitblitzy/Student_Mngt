@@ -13,14 +13,14 @@
     <h1>Student Report Generator</h1>
 
     <form class="form-section" action="/generate-report" method="post" id="reportForm">
-        <input type="text" id="studentName" name="studentName" placeholder="Student Name">
-        <input type="text" id="rollNumber" name="rollNumber" placeholder="Roll Number">
+        <input type="text" id="studentName" name="studentName" placeholder="Student Name" aria-label="Student Name">
+        <input type="text" id="rollNumber" name="rollNumber" placeholder="Roll Number" aria-label="Roll Number">
 
-        <input type="number" id="maths" name="maths" placeholder="Maths Marks">
-        <input type="number" id="science" name="science" placeholder="Science Marks">
-        <input type="number" id="english" name="english" placeholder="English Marks">
-        <input type="number" id="history" name="history" placeholder="History Marks">
-        <input type="number" id="computer" name="computer" placeholder="Computer Marks">
+        <input type="number" id="maths" name="maths" placeholder="Maths Marks" aria-label="Maths Marks">
+        <input type="number" id="science" name="science" placeholder="Science Marks" aria-label="Science Marks">
+        <input type="number" id="english" name="english" placeholder="English Marks" aria-label="English Marks">
+        <input type="number" id="history" name="history" placeholder="History Marks" aria-label="History Marks">
+        <input type="number" id="computer" name="computer" placeholder="Computer Marks" aria-label="Computer Marks">
 
         <button type="submit" onclick="generateReport()">Generate Report</button>
         <button type="submit" form="downloadForm" onclick="downloadPDF()">Download PDF</button>
