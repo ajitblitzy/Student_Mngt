@@ -1,0 +1,4 @@
+# Student Report Generator — pinned dependencies (see pyproject.toml for full project metadata)
+Flask==3.1.3
+reportlab==4.5.1
+pytest==9.0.3
