@@ -77,10 +77,11 @@ intent.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from io import BytesIO
 from typing import Final
 
-from flask import Flask, abort, render_template, request, send_file
+from flask import Flask, Response, abort, render_template, request, send_file
 from werkzeug.exceptions import BadRequest
 
 from report_generator.calculations import compute_percentage, compute_total
@@ -129,6 +130,46 @@ check in the ``/download`` route — if
 :func:`~report_generator.pdf_generator.generate_pdf` somehow returned
 bytes that did *not* begin with this header, the download is aborted
 with HTTP 500 rather than serving a corrupted attachment to the user.
+"""
+
+
+_FORBIDDEN_FILENAME_CHARS: Final[tuple[str, ...]] = ("\r", "\n", "\x00")
+"""Characters whose presence in a download filename triggers HTTP 400.
+
+CR (``\\r``) and LF (``\\n``) are HTTP header-injection vectors: a
+filename embedding them would either let an attacker smuggle
+additional headers into the response (header splitting) or — in the
+specific case of Werkzeug 3.x's strict ``Content-Disposition``
+encoder — cause :class:`ValueError` to bubble out of
+:func:`flask.send_file`, surfacing as an opaque HTTP 500 with no
+useful diagnostic for the caller.  Converting the failure into an
+explicit, well-formed :class:`werkzeug.exceptions.BadRequest`
+(HTTP 400) is strictly better behaviour: the user is told their
+input is invalid in a structured way the test suite can pin down,
+and the server-side log captures a *BadRequest* rather than a
+generic *ValueError*.
+
+The NUL byte (``\\x00``) is included for completeness — it is a
+classic filesystem terminator-confusion vector even though
+``Content-Disposition`` quoting would handle it; rejecting it
+preemptively keeps the validation surface uniform.
+"""
+
+
+_FILENAME_PATH_SEPARATOR_MAP: Final[dict[str, str]] = {"/": "_", "\\": "_"}
+"""Character substitution map applied to download filename stems.
+
+POSIX (``/``) and Windows (``\\``) path separators are *replaced*
+(not rejected) with an underscore.  A user who types ``../evil`` as
+their student name has not produced an HTTP-protocol vulnerability
+— Werkzeug's ``Content-Disposition`` encoder will quote the value
+correctly — but it would leak a path-like advisory filename to the
+browser's download dialog, which is at minimum a usability issue
+and at worst an Aesthetic/forensic anomaly.  Replacement
+(``../evil`` → ``.._evil``) preserves the user's intent in a
+visually similar form while eliminating both the path-traversal
+appearance and the platform-dependent separator interpretation
+that some download clients still apply.
 """
 
 
@@ -204,7 +245,138 @@ def _parse_mark(raw: str | None) -> int:
         raise BadRequest(f"Invalid mark value: {raw!r}") from exc
 
 
-def _build_report_from_form(form) -> StudentReport:  # noqa: ANN001 (Flask ImmutableMultiDict)
+def _sanitize_filename_stem(raw_name: str) -> str:
+    """Sanitize a user-supplied name for safe use as a download filename stem.
+
+    The student name is interpolated into the ``Content-Disposition``
+    header (via :func:`flask.send_file`'s ``download_name`` argument)
+    and into the on-disk filename presented to the browser's save
+    dialog.  Both surfaces require defensive validation:
+
+    1.  **HTTP header injection (CR/LF/NUL).**  Werkzeug 3.x's
+        ``Content-Disposition`` encoder rejects values containing
+        ``\\r``, ``\\n``, or ``\\x00`` with :class:`ValueError`,
+        which Flask surfaces as an opaque HTTP 500.  Converting the
+        failure into an explicit HTTP 400 via
+        :class:`werkzeug.exceptions.BadRequest` gives the caller a
+        well-defined failure mode (matching the existing 400 returned
+        by :func:`_parse_mark` for non-numeric marks).  This closes
+        the CR/LF header-smuggling vector listed in the checkpoint's
+        filename-hardening verification (per AAP §0.6.4).
+
+    2.  **Path-traversal appearance (``/`` and ``\\``).**  Names
+        containing path-separator characters (``"../evil"``,
+        ``"C:\\\\Users\\\\..\\\\boot.ini"``) are *not* an HTTP-level
+        vulnerability — Werkzeug quotes them correctly — but they
+        would leak a path-like advisory filename to the browser's
+        download dialog, which is at minimum a usability issue and
+        at worst forensically misleading.  Replacement (``/`` → ``_``,
+        ``\\`` → ``_``) preserves the user's intent in a visually
+        similar form while eliminating the platform-specific
+        separator interpretation that some download clients still
+        apply.
+
+    3.  **Empty-name fallback.**  When the resulting stem is empty
+        (after stripping incidental whitespace) the helper falls
+        back to :data:`_DEFAULT_FILENAME_STEM` (``"Student"``) so
+        the download is named ``Student_Report.pdf`` rather than the
+        awkward ``_Report.pdf`` the original JavaScript would have
+        produced for an undefined-input case.
+
+    Normal names (``"Alice Smith"``, ``"O'Brien"``, ``"Müller"``,
+    ``"Anne-Marie"``) are preserved verbatim — Werkzeug's RFC 5987
+    encoder produces both an ASCII fallback (``filename=``) and a
+    UTF-8 percent-encoded variant (``filename*=UTF-8''...``) so
+    non-ASCII characters round-trip correctly without any sanitisation
+    on our side.
+
+    Parameters
+    ----------
+    raw_name : str
+        The student name as submitted by the form, already trimmed of
+        leading/trailing whitespace by :func:`_build_report_from_form`.
+
+    Returns
+    -------
+    str
+        A sanitized filename stem safe for direct interpolation into a
+        ``<stem>_Report.pdf`` download filename.  Never contains
+        ``\\r``, ``\\n``, ``\\x00``, ``/``, or ``\\``.  Never empty;
+        falls back to :data:`_DEFAULT_FILENAME_STEM` if the raw input
+        would have produced an empty result.
+
+    Raises
+    ------
+    werkzeug.exceptions.BadRequest
+        Raised (HTTP 400) when ``raw_name`` contains any character in
+        :data:`_FORBIDDEN_FILENAME_CHARS` (CR, LF, NUL).
+
+    Examples
+    --------
+    Normal names (and the empty-name fallback) are preserved::
+
+        >>> _sanitize_filename_stem("Alice Smith")
+        'Alice Smith'
+        >>> _sanitize_filename_stem("O'Brien")
+        "O'Brien"
+        >>> _sanitize_filename_stem("Müller")
+        'Müller'
+        >>> _sanitize_filename_stem("")
+        'Student'
+
+    Path separators are replaced::
+
+        >>> _sanitize_filename_stem("../evil")
+        '.._evil'
+        >>> _sanitize_filename_stem("C:\\\\Users\\\\evil")
+        'C:_Users_evil'
+
+    CR/LF/NUL are rejected::
+
+        >>> _sanitize_filename_stem("Alice\\r\\nX-Injected: hi")
+        Traceback (most recent call last):
+            ...
+        werkzeug.exceptions.BadRequest: 400 Bad Request: ...
+    """
+    # Reject HTTP header-injection characters outright (CR, LF, NUL).
+    # Using ``any(ch in raw_name for ch in ...)`` is O(N*M) but both N
+    # (the name length, typically <100) and M (3) are tiny — the
+    # alternative ``set(...).intersection(...)`` would build a fresh
+    # set on every call without measurable benefit.
+    if any(ch in raw_name for ch in _FORBIDDEN_FILENAME_CHARS):
+        raise BadRequest(
+            "Invalid character in student name: control characters "
+            "(CR, LF, NUL) are not allowed in download filenames."
+        )
+
+    # Replace path-separator characters with safe underscore using a
+    # single ``str.translate`` call backed by a precomputed map.  This
+    # is faster than chained ``.replace`` calls and produces the same
+    # result.  The translate table is built once at module import time
+    # (in :data:`_FILENAME_PATH_SEPARATOR_MAP`'s materialised form).
+    sanitized = raw_name.translate(str.maketrans(_FILENAME_PATH_SEPARATOR_MAP))
+
+    # Trim incidental whitespace that the substitution may have left
+    # exposed (e.g. an input like ``"  /Alice/  "`` becomes
+    # ``"  _Alice_  "`` after replacement and ``"_Alice_"`` after
+    # stripping).  The caller already calls ``.strip()`` on the raw
+    # name, but defence in depth: redoing it here keeps the helper
+    # correct in isolation should it be reused elsewhere.
+    sanitized = sanitized.strip()
+
+    # Fall back to the default stem if the sanitization left the name
+    # empty.  Two paths reach this branch: (a) the original input was
+    # empty/whitespace-only, and (b) the input consisted solely of
+    # path-separator characters that all collapsed to underscores
+    # which were then stripped.  In neither case can the user have
+    # intended a real filename, so the default is the safest choice.
+    if not sanitized:
+        return _DEFAULT_FILENAME_STEM
+
+    return sanitized
+
+
+def _build_report_from_form(form: Mapping[str, str]) -> StudentReport:
     """Build a :class:`StudentReport` from the submitted form payload.
 
     Shared by the ``/generate`` (renders to HTML) and ``/download``
@@ -217,12 +389,15 @@ def _build_report_from_form(form) -> StudentReport:  # noqa: ANN001 (Flask Immut
 
     Parameters
     ----------
-    form : werkzeug.datastructures.ImmutableMultiDict
-        The form payload from :data:`flask.request.form`.  Annotated as
-        an untyped parameter to avoid leaking the verbose Werkzeug type
-        into this module's signature — any mapping that supports
-        ``.get(key, default)`` (Werkzeug's own ImmutableMultiDict, a
-        plain :class:`dict`, etc.) works correctly.
+    form : collections.abc.Mapping[str, str]
+        The form payload from :data:`flask.request.form`.  Typed as a
+        :class:`collections.abc.Mapping[str, str]` (the lowest-common-
+        denominator interface) so callers may pass Werkzeug's own
+        :class:`werkzeug.datastructures.ImmutableMultiDict` (which is
+        a ``Mapping[str, str]``) or any other read-only mapping —
+        a plain :class:`dict`, a :class:`types.MappingProxyType`,
+        etc.  This keeps the helper test-friendly without leaking
+        Werkzeug-specific types into the public-facing signature.
 
     Returns
     -------
@@ -348,7 +523,7 @@ def create_app() -> Flask:
         return render_template("index.html", report=report, subjects=SUBJECTS)
 
     @app.route("/download", methods=["POST"])
-    def download():
+    def download() -> Response:
         """Compute the report and stream a PDF attachment to the browser.
 
         Replaces the original ``onclick="downloadPDF()"`` handler at
@@ -361,22 +536,40 @@ def create_app() -> Flask:
         AAP §0.6.1).
 
         The download filename matches the original pattern
-        ``<name>_Report.pdf`` (per ``Readme.md`` line 236).  When
-        the user submitted an empty ``studentName`` the fallback
-        :data:`_DEFAULT_FILENAME_STEM` (``"Student"``) is
-        substituted so the download is named ``Student_Report.pdf``
-        rather than the awkward ``_Report.pdf`` the original would
-        have produced — an undefined-behaviour input the JavaScript
-        never properly handled.
+        ``<name>_Report.pdf`` (per ``Readme.md`` line 236).  The
+        filename stem is routed through
+        :func:`_sanitize_filename_stem` before interpolation, which:
+
+        *   Rejects names containing CR (``\\r``), LF (``\\n``), or
+            NUL (``\\x00``) with HTTP 400 — closing the
+            header-injection vector that would otherwise surface as
+            an opaque HTTP 500 from Werkzeug's
+            ``Content-Disposition`` encoder.
+        *   Replaces path-separator characters ``/`` and ``\\`` with
+            underscore, neutralising the visually-misleading
+            ``../evil_Report.pdf`` style filenames a malicious or
+            careless user could submit.
+        *   Falls back to :data:`_DEFAULT_FILENAME_STEM`
+            (``"Student"``) for empty input, preserving the
+            usability improvement over the original
+            ``_Report.pdf`` behaviour.
 
         Returns
         -------
-        flask.wrappers.Response
+        flask.Response
             A Flask response with ``Content-Type: application/pdf``
             and ``Content-Disposition: attachment; filename=...``.
+            Werkzeug emits both the legacy ``filename=`` and the
+            RFC 5987 ``filename*=UTF-8''…`` parameters so non-ASCII
+            names round-trip correctly across browsers.
 
         Raises
         ------
+        werkzeug.exceptions.BadRequest
+            HTTP 400 when the student name contains CR/LF/NUL
+            characters that would otherwise smuggle headers into the
+            response or break Werkzeug's quoting (per
+            :func:`_sanitize_filename_stem`).
         werkzeug.exceptions.HTTPException
             HTTP 500 (via :func:`flask.abort`) if
             :func:`~report_generator.pdf_generator.generate_pdf`
@@ -386,6 +579,14 @@ def create_app() -> Flask:
             user.
         """
         report = _build_report_from_form(request.form)
+
+        # Validate and sanitize the filename stem *before* invoking
+        # the (relatively expensive) PDF generation pipeline.  If the
+        # name is malformed we want to fail fast with HTTP 400 rather
+        # than wasting CPU cycles rendering a PDF whose download
+        # response will be rejected by Werkzeug's header encoder.
+        filename_stem = _sanitize_filename_stem(report.input.name)
+
         pdf_bytes = generate_pdf(report)
 
         # Defensive guard: refuse to stream a non-PDF byte payload.
@@ -403,7 +604,7 @@ def create_app() -> Flask:
         buffer = BytesIO(pdf_bytes)
         buffer.seek(0)
 
-        filename = f"{report.input.name or _DEFAULT_FILENAME_STEM}_Report.pdf"
+        filename = f"{filename_stem}_Report.pdf"
 
         return send_file(
             buffer,

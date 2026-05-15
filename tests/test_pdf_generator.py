@@ -3,31 +3,28 @@
 This module is the executable proof that
 :func:`report_generator.pdf_generator.generate_pdf` produces a syntactically
 valid PDF document whose textual content reproduces — byte for byte — the
-output of the original browser-side ``downloadPDF()`` JavaScript function
-at ``Readme.md`` lines 215–237 of the source repository::
+output of the original browser-side PDF generation function at
+``Readme.md`` lines 215–237 of the source repository.  The original
+function (referenced below by its public-facing name only) performs the
+following draw operations against an A4 portrait page using its library's
+default top-left millimetre coordinate system:
 
-    function downloadPDF() {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        // ...
-        doc.setFontSize(18);
-        doc.text('Student Report Card', 20, 20);
-        doc.setFontSize(12);
-        doc.text(`Student Name: ${name}`, 20, 40);
-        doc.text(`Roll Number: ${roll}`, 20, 50);
-        doc.text(`Total Marks: ${total}`, 20, 60);
-        doc.text(`Percentage: ${percentage}%`, 20, 70);
-        doc.text(`Grade: ${grade}`, 20, 80);
-        doc.save(`${name}_Report.pdf`);
-    }
+* Set title font size to 18 pt.
+* Draw the literal title ``"Student Report Card"`` at (20, 20).
+* Set body font size to 12 pt.
+* Draw the lines ``Student Name: <name>``, ``Roll Number: <roll>``,
+  ``Total Marks: <total>``, ``Percentage: <percentage>%``, and
+  ``Grade: <grade>`` at (20, 40), (20, 50), (20, 60), (20, 70), and
+  (20, 80) respectively.
+* Persist the document under the filename ``<name>_Report.pdf``.
 
-The percentage value in the original implementation is formatted with
-``percentage.toFixed(2)`` at ``Readme.md`` line 211 before being read back
-out of the DOM for inclusion in the PDF — so the PDF always carries two
-decimal places (e.g. ``85.00%``, ``100.00%``, ``0.00%``).  The Python port
-reproduces this with the ``:.2f`` f-string spec; the corresponding tests
-in *Phase 5* (`test_pdf_perfect_score`, `test_pdf_failing_score`) pin that
-formatting down explicitly.
+The percentage value in the original implementation is formatted with the
+``.toFixed(2)`` numeric formatter at ``Readme.md`` line 211 before being
+read back out of the DOM for inclusion in the PDF — so the PDF always
+carries two decimal places (e.g. ``85.00%``, ``100.00%``, ``0.00%``).
+The Python port reproduces this with the ``:.2f`` f-string spec; the
+corresponding tests in *Phase 5* (`test_pdf_perfect_score`,
+`test_pdf_failing_score`) pin that formatting down explicitly.
 
 Why this module exists
 ----------------------
@@ -595,24 +592,34 @@ def test_pdf_is_deterministic_in_length(sample_report: StudentReport) -> None:
 def test_pdf_with_special_characters_in_name() -> None:
     """A name with ASCII punctuation (``O'Brien``) does not corrupt the PDF.
 
-    The original JavaScript wrote the name directly into the PDF body
-    via :meth:`doc.text`; jsPDF and ReportLab both escape PDF metacharacters
-    such as ``'`` (apostrophe), ``\\``, ``(``, ``)`` automatically.  This
-    test verifies two related guarantees:
+    The original implementation wrote the name directly into the PDF
+    body via its library's text-drawing method; both the original
+    library and ReportLab escape PDF metacharacters (``\\``, ``(``,
+    ``)``) automatically and pass the ASCII apostrophe ``'`` through
+    unchanged.  This test verifies three related guarantees:
 
     1.  The resulting byte stream is still a *well-formed* PDF — it
         still starts with the ``%PDF-`` magic header.  A regression
         that double-escaped or under-escaped the apostrophe would
         typically produce an unparseable PDF.
-    2.  The first character of the name (``O``) is still discoverable
-        by :func:`_pdf_contains` — even though the apostrophe itself
-        may have been transformed to ``\\'`` or ``\\047`` by ReportLab's
-        escaper, the unambiguous-ASCII prefix is preserved.
-
-    The check is deliberately permissive on the apostrophe: pinning a
-    specific escape form would couple the test to ReportLab's internal
-    encoding choice and defeat the purpose of the test (we want to
-    verify *robustness*, not the escape mechanism's output format).
+    2.  The rendered student-name line ``"Student Name: O'Brien"`` is
+        discoverable verbatim in the decompressed content stream.
+        Asserting the full line rather than a bare letter is a far
+        stronger predicate — a single ``"O"`` would also appear in
+        unrelated PDF metadata such as the ``/Producer`` string,
+        which would pass the assertion without actually proving the
+        student name was rendered.  Locating the full prefix
+        ``"Student Name: O"`` (and, where the PDF library passes
+        apostrophes through unchanged, the full ``"O'Brien"``)
+        proves the user-supplied name is faithfully reproduced.
+    3.  The fully rendered name ``"O'Brien"`` survives into the
+        content stream when the PDF library passes the apostrophe
+        through unchanged (the current behaviour of ReportLab
+        4.5.1).  Should a future library version transform the
+        apostrophe into an octal escape (``\\047``) or a backslash
+        escape (``\\'``), the weaker ``"Student Name: O"`` predicate
+        still passes — the test degrades gracefully without losing
+        its anti-regression value.
     """
     student = StudentInput(
         name="O'Brien",
@@ -632,8 +639,26 @@ def test_pdf_with_special_characters_in_name() -> None:
     assert pdf_bytes.startswith(b"%PDF-"), (
         "PDF with apostrophe-bearing name does not start with %PDF-"
     )
-    # The literal apostrophe may be escaped by ReportLab; the leading
-    # 'O' is unambiguous ASCII and survives unchanged.
-    assert _pdf_contains(pdf_bytes, "O"), (
-        "Expected the leading 'O' of 'O\\'Brien' to be present in the PDF"
+    # Strong predicate: the rendered line begins with "Student Name: O"
+    # — a 16-character prefix that uniquely identifies the student-name
+    # line in the PDF content stream and cannot be matched by stray
+    # PDF metadata.  This replaces an earlier, weaker assertion that
+    # merely searched for a bare "O" (which would also have matched
+    # PDF /Producer strings such as "ReportLab"); the stronger
+    # predicate proves the user-supplied name actually reached the
+    # content stream.
+    assert _pdf_contains(pdf_bytes, "Student Name: O"), (
+        "Expected 'Student Name: O' rendered line in the PDF content "
+        "(the name 'O\\'Brien' did not survive the rendering pipeline)"
+    )
+    # Strongest predicate: the full unescaped name survives.  ReportLab
+    # 4.5.1 passes ASCII apostrophes through unchanged, so the rendered
+    # line should contain the verbatim string "Student Name: O'Brien".
+    # If a future library version changes the apostrophe-escape
+    # strategy, this assertion may need to be updated, but the previous
+    # weaker assertion above will keep providing regression coverage.
+    assert _pdf_contains(pdf_bytes, "Student Name: O'Brien"), (
+        "Expected verbatim 'Student Name: O\\'Brien' in the PDF content "
+        "stream (ReportLab is expected to pass ASCII apostrophes "
+        "through unchanged in PDF content streams)"
     )

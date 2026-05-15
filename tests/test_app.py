@@ -57,11 +57,17 @@ Test isolation guarantees
 
 Compliance notes
 ----------------
-*   PEP 484 type hints on every test signature (per AAP §0.7.5).
+*   PEP 484 type hints on every test signature (per AAP §0.7.5),
+    including the :class:`~flask.testing.FlaskClient` annotation on the
+    :func:`client` fixture and every test function that consumes it.
 *   PEP 257 docstrings on every fixture and test function.
 *   PEP 8 layout, line length ≤ 100 characters.
-*   Only :mod:`pytest` is imported from third parties — no additional
-    test-only dependency is introduced beyond what AAP §0.5.1 pins.
+*   Only :mod:`pytest`, :mod:`base64`, :mod:`re`, and :mod:`zlib`
+    (the latter three from the Python standard library) are imported
+    in addition to the application code — no third-party PDF parser
+    is required.  The standard-library trio is used by the local
+    :func:`_pdf_contains` helper to decompress the ReportLab content
+    streams for the cross-endpoint equivalence verification.
 *   ``from __future__ import annotations`` (PEP 563) allows the modern
     ``dict[str, str]`` syntax in fixture return annotations without
     runtime evaluation cost on Python 3.10+.
@@ -69,9 +75,103 @@ Compliance notes
 
 from __future__ import annotations
 
+import base64
+import re
+import zlib
+from collections.abc import Iterator
+
 import pytest
+from flask.testing import FlaskClient
 
 from app import create_app
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants and helpers — PDF content inspection
+# ---------------------------------------------------------------------------
+#
+# The cross-endpoint equivalence test (per AAP §0.6.2) must prove that
+# ``/generate`` and ``/download`` compute *identical* values from the
+# same form payload, not merely that both routes return a 200 response.
+# To make that proof robust, the test decompresses the ASCII85+Flate
+# content streams emitted by ReportLab and asserts the rendered text
+# lines (``Student Name: ...``, ``Roll Number: ...``, ``Total Marks:
+# ...``, ``Percentage: ...%``, ``Grade: ...``) appear verbatim in the
+# downloaded PDF for the same values the ``/generate`` HTML response
+# carries.  The helper :func:`_pdf_contains` below applies the same
+# three-strategy search documented in ``tests/test_pdf_generator.py``
+# (raw byte search, lossy latin-1 decode, ASCII85+Flate decompression)
+# — a small amount of duplication that keeps each test module
+# self-contained.
+
+# Matches ReportLab's ``stream\n…endstream`` blocks.  ``re.DOTALL``
+# lets ``.`` match the embedded newlines so the entire compressed
+# payload (binary data, including newlines) is captured by the
+# single capture group.
+_STREAM_RE: re.Pattern[bytes] = re.compile(rb"stream\n(.*?)endstream", re.DOTALL)
+
+
+def _pdf_contains(pdf_bytes: bytes, needle: str) -> bool:
+    """Return :data:`True` iff *needle* appears anywhere in the PDF *pdf_bytes*.
+
+    Applies three search strategies in series, returning the first
+    match.  Mirrors the helper documented in
+    :mod:`tests.test_pdf_generator` — the duplication keeps each test
+    module independently usable without cross-module imports.
+
+    1. **Raw byte search** — locates substrings ReportLab writes
+       uncompressed (``/Info`` dictionary values, PDF metadata).
+    2. **Lossy ``latin-1`` decode** — catches substrings that fall on
+       chunk boundaries.
+    3. **ASCII85 + Flate decompression** — strips the ASCII85 outer
+       layer (``~>`` terminator) and the inner ``zlib`` Flate layer
+       from every ``stream … endstream`` block, then searches the
+       decoded text-positioning operators (e.g. ``(Student Name:
+       Alice Smith) Tj``) for the needle.  This is the strategy that
+       locates user-supplied data in the body of the PDF.
+
+    Parameters
+    ----------
+    pdf_bytes:
+        The full byte sequence of the PDF response (typically
+        ``response.data`` from a Flask test-client POST).
+    needle:
+        The literal string to search for.
+
+    Returns
+    -------
+    bool
+        :data:`True` iff *needle* is found by any strategy.
+    """
+    needle_bytes: bytes = needle.encode("latin-1")
+
+    # Strategy 1: raw byte search.
+    if needle_bytes in pdf_bytes:
+        return True
+
+    # Strategy 2: lossy latin-1 decode.
+    decoded: str = pdf_bytes.decode("latin-1", errors="ignore")
+    if needle in decoded:
+        return True
+
+    # Strategy 3: decompress ASCII85+Flate streams.
+    for match in _STREAM_RE.finditer(pdf_bytes):
+        raw_stream: bytes = match.group(1).rstrip(b"\r\n ")
+        if not raw_stream.endswith(b"~>"):
+            # Non-ASCII85 stream (font subset, XMP metadata, …) — skip.
+            continue
+        try:
+            a85_payload: bytes = raw_stream[:-2]
+            compressed: bytes = base64.a85decode(
+                a85_payload, adobe=False, ignorechars=b"\n\r\t "
+            )
+            inflated: bytes = zlib.decompress(compressed)
+        except (ValueError, zlib.error, OSError):
+            continue
+        if needle_bytes in inflated:
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +180,7 @@ from app import create_app
 
 
 @pytest.fixture
-def client():
+def client() -> Iterator[FlaskClient]:
     """Provide a Flask test client with TESTING mode enabled.
 
     Each test invocation receives a brand-new Flask application
@@ -148,7 +248,7 @@ def valid_form_data() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def test_index_get_returns_200_with_form(client) -> None:
+def test_index_get_returns_200_with_form(client: FlaskClient) -> None:
     """GET ``/`` returns 200 with the empty student-details form.
 
     Verifies F-001 (Form Input Capture): the application's entry point
@@ -174,7 +274,7 @@ def test_index_get_returns_200_with_form(client) -> None:
     assert body_lower.count(b"<button") >= 2 or body_lower.count(b"submit") >= 2
 
 
-def test_index_get_has_form_action_attributes(client) -> None:
+def test_index_get_has_form_action_attributes(client: FlaskClient) -> None:
     """The rendered form wires both ``/generate`` and ``/download`` endpoints.
 
     AAP §0.6.2 eliminates the DOM-as-shared-state pattern by routing
@@ -192,7 +292,7 @@ def test_index_get_has_form_action_attributes(client) -> None:
     assert b"/download" in body
 
 
-def test_index_get_no_report_card_visible_initially(client) -> None:
+def test_index_get_no_report_card_visible_initially(client: FlaskClient) -> None:
     """The report card is not rendered on the initial GET visit.
 
     The Jinja2 template uses ``{% if report %}`` to gate the
@@ -222,7 +322,10 @@ def test_index_get_no_report_card_visible_initially(client) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_generate_post_with_valid_data(client, valid_form_data: dict[str, str]) -> None:
+def test_generate_post_with_valid_data(
+    client: FlaskClient,
+    valid_form_data: dict[str, str],
+) -> None:
     """POST ``/generate`` with valid data returns 200 + populated report card.
 
     Verifies the happy-path of F-002 (Total/Percentage), F-003 (Grade),
@@ -255,7 +358,7 @@ def test_generate_post_with_valid_data(client, valid_form_data: dict[str, str]) 
     assert b'id="grade">A<' in body
 
 
-def test_generate_post_with_empty_marks(client) -> None:
+def test_generate_post_with_empty_marks(client: FlaskClient) -> None:
     """Empty/missing marks coerce to 0 — preserves JS ``parseInt(value||0)``.
 
     AAP §0.6.3 mandates that the new ``_parse_mark`` helper preserve
@@ -280,7 +383,7 @@ def test_generate_post_with_empty_marks(client) -> None:
     assert b"0.00" in body
 
 
-def test_generate_post_with_all_zeros_marks(client) -> None:
+def test_generate_post_with_all_zeros_marks(client: FlaskClient) -> None:
     """Explicitly empty mark strings coerce to 0 (matches JS ``|| 0`` fallback).
 
     A subtly different code path from
@@ -308,7 +411,7 @@ def test_generate_post_with_all_zeros_marks(client) -> None:
     assert b'id="grade">F<' in body
 
 
-def test_generate_post_with_invalid_marks(client) -> None:
+def test_generate_post_with_invalid_marks(client: FlaskClient) -> None:
     """Non-numeric marks raise HTTP 400 (improvement over silent NaN).
 
     AAP §0.6.3 documents the one intentional behaviour change from the
@@ -335,7 +438,7 @@ def test_generate_post_with_invalid_marks(client) -> None:
     assert response.status_code == 400
 
 
-def test_generate_post_perfect_score(client) -> None:
+def test_generate_post_perfect_score(client: FlaskClient) -> None:
     """A perfect score (all 100s) yields percentage 100.00 and grade A+.
 
     Verifies the top of the grade ladder.  Five 100s sum to 500, the
@@ -363,7 +466,7 @@ def test_generate_post_perfect_score(client) -> None:
     assert b"100.00" in body
 
 
-def test_generate_post_failing_score(client) -> None:
+def test_generate_post_failing_score(client: FlaskClient) -> None:
     """A score below 50% yields grade F.
 
     Verifies the bottom of the grade ladder.  Marks 40+30+20+10+0=100,
@@ -392,7 +495,10 @@ def test_generate_post_failing_score(client) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_download_post_returns_pdf_attachment(client, valid_form_data: dict[str, str]) -> None:
+def test_download_post_returns_pdf_attachment(
+    client: FlaskClient,
+    valid_form_data: dict[str, str],
+) -> None:
     """POST ``/download`` returns 200 + an ``application/pdf`` attachment.
 
     Verifies the F-005/F-006 contract end-to-end at the HTTP layer:
@@ -420,7 +526,7 @@ def test_download_post_returns_pdf_attachment(client, valid_form_data: dict[str,
 
 
 def test_download_pdf_bytes_start_with_magic(
-    client,
+    client: FlaskClient,
     valid_form_data: dict[str, str],
 ) -> None:
     """The downloaded PDF body starts with the ``%PDF-`` magic bytes.
@@ -439,7 +545,7 @@ def test_download_pdf_bytes_start_with_magic(
     assert response.data[:5] == b"%PDF-"
 
 
-def test_download_filename_pattern(client) -> None:
+def test_download_filename_pattern(client: FlaskClient) -> None:
     """The ``Content-Disposition`` filename matches ``<studentName>_Report.pdf``.
 
     Preserves the exact filename pattern from
@@ -472,7 +578,10 @@ def test_download_filename_pattern(client) -> None:
     assert "AliceSmith_Report.pdf" in content_disposition
 
 
-def test_download_pdf_contains_eof_marker(client, valid_form_data: dict[str, str]) -> None:
+def test_download_pdf_contains_eof_marker(
+    client: FlaskClient,
+    valid_form_data: dict[str, str],
+) -> None:
     """The downloaded PDF body contains the ``%%EOF`` marker near the end.
 
     Per the PDF specification, a well-formed PDF document ends with
@@ -494,7 +603,7 @@ def test_download_pdf_contains_eof_marker(client, valid_form_data: dict[str, str
     assert b"%%EOF" in response.data[-1024:]
 
 
-def test_download_with_empty_marks_succeeds(client) -> None:
+def test_download_with_empty_marks_succeeds(client: FlaskClient) -> None:
     """Empty marks coerce to 0 and still produce a valid PDF.
 
     Parity check with :func:`test_generate_post_with_empty_marks`:
@@ -520,7 +629,7 @@ def test_download_with_empty_marks_succeeds(client) -> None:
     assert response.data[:5] == b"%PDF-"
 
 
-def test_download_with_invalid_marks_returns_400(client) -> None:
+def test_download_with_invalid_marks_returns_400(client: FlaskClient) -> None:
     """Non-numeric marks on ``/download`` also raise HTTP 400.
 
     Mirror-image of :func:`test_generate_post_with_invalid_marks` —
@@ -545,20 +654,20 @@ def test_download_with_invalid_marks_returns_400(client) -> None:
 
 
 def test_generate_and_download_use_same_pipeline(
-    client,
+    client: FlaskClient,
     valid_form_data: dict[str, str],
 ) -> None:
     """``/generate`` and ``/download`` compute identical values from the same payload.
 
     The architectural verification of AAP §0.6.2: by submitting the
-    same form payload to both routes and asserting that both produce
-    successful, well-formed responses, this test proves that the
-    DOM-as-transient-shared-state pattern from the original
-    implementation (ADR-005) has been eliminated.  The original code
-    required a strict click-order — "Generate" *before* "Download" or
-    the PDF would be blank — because ``downloadPDF()`` read its data
-    from DOM nodes that ``generateReport()`` was responsible for
-    populating.
+    *same* form payload to both routes and asserting that both produce
+    the *same* computed values — not merely that both routes return
+    200 responses — this test proves that the DOM-as-transient-shared
+    -state pattern from the original implementation (ADR-005) has
+    been eliminated.  The original code required a strict click-order
+    — "Generate" *before* "Download" or the PDF would be blank —
+    because the original download handler read its data from DOM
+    nodes the generate handler was responsible for populating.
 
     In the Python port both routes are stateless: they accept the same
     form payload, route it through the same
@@ -566,14 +675,505 @@ def test_generate_and_download_use_same_pipeline(
     There is no implicit ordering dependency because there is no
     shared state.  Either route can be invoked first; both produce
     correct output every time.
+
+    Strength of the assertion
+    -------------------------
+    Per the *fca6de* code-review finding, this test is the
+    architectural verification of AAP §0.6.2 — and therefore must
+    *prove* that both endpoints compute the same five values for the
+    same input.  A weaker check (status code + magic bytes + the
+    student's first name in the HTML) would still pass if a future
+    refactor accidentally caused ``/download`` to ignore the form
+    payload entirely and stream a placeholder PDF; this test
+    inspects the decompressed content stream of the downloaded PDF
+    and asserts that each of the five rendered lines
+    (``Student Name``, ``Roll Number``, ``Total Marks``,
+    ``Percentage``, ``Grade``) carries the same value that the HTML
+    response renders.  A divergence between the two would cause the
+    PDF assertions to fail loudly with a precise diagnostic.
+
+    The :func:`valid_form_data` fixture's marks
+    (90+85+80+75+95 = 425) produce a clean two-decimal percentage
+    (85.00) and the grade ``A`` — values that the PDF must reproduce
+    bit-for-bit if both routes share the same pipeline.
     """
     resp_gen = client.post("/generate", data=valid_form_data)
     resp_dl = client.post("/download", data=valid_form_data)
-    # Both routes must succeed on the same input.
+
+    # ---- Layer 1: HTTP-level success -------------------------------
+    # Both routes must succeed on the same input.  Any other status
+    # code would indicate the pipelines diverged before the
+    # computation stage.
     assert resp_gen.status_code == 200
     assert resp_dl.status_code == 200
-    # /generate returns a rendered HTML page with the student name.
-    assert b"Alice" in resp_gen.data
-    # /download returns a PDF attachment.
+
+    # /generate returns a rendered HTML page; /download returns a PDF.
     assert resp_dl.mimetype == "application/pdf"
     assert resp_dl.data[:5] == b"%PDF-"
+
+    # ---- Layer 2: HTML response carries the computed values --------
+    # These assertions mirror :func:`test_generate_post_with_valid_data`
+    # and pin down what the user *sees* on the screen after clicking
+    # "Generate Report".
+    html = resp_gen.data
+    assert b"Alice Smith" in html, (
+        "/generate response missing rendered student name"
+    )
+    assert b"42" in html, (
+        "/generate response missing rendered roll number"
+    )
+    assert b"425" in html, (
+        "/generate response missing rendered total"
+    )
+    assert b"85.00" in html, (
+        "/generate response missing rendered percentage"
+    )
+    assert b'id="grade">A<' in html, (
+        "/generate response missing rendered grade 'A'"
+    )
+
+    # ---- Layer 3: PDF response carries the *same* computed values --
+    # This is the architectural-equivalence assertion: the downloaded
+    # PDF must contain the same five rendered lines that the HTML
+    # response carries.  If the two pipelines ever diverged, this
+    # block would fail loudly with a specific diagnostic.  Each line
+    # is searched for using the standard-library-only
+    # :func:`_pdf_contains` helper, which decompresses the
+    # ASCII85+Flate-encoded content streams emitted by ReportLab.
+    pdf_bytes = resp_dl.data
+    assert _pdf_contains(pdf_bytes, "Student Name: Alice Smith"), (
+        "/download PDF missing the rendered student-name line — "
+        "/generate and /download have diverged"
+    )
+    assert _pdf_contains(pdf_bytes, "Roll Number: 42"), (
+        "/download PDF missing the rendered roll-number line — "
+        "/generate and /download have diverged"
+    )
+    assert _pdf_contains(pdf_bytes, "Total Marks: 425"), (
+        "/download PDF missing the rendered total line — "
+        "/generate and /download have diverged"
+    )
+    assert _pdf_contains(pdf_bytes, "Percentage: 85.00%"), (
+        "/download PDF missing the rendered percentage line — "
+        "/generate and /download have diverged"
+    )
+    assert _pdf_contains(pdf_bytes, "Grade: A"), (
+        "/download PDF missing the rendered grade line — "
+        "/generate and /download have diverged"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /download filename sanitization — security hardening (AAP §0.6.4)
+# ---------------------------------------------------------------------------
+#
+# These tests close the filename-hardening verification flagged by the
+# *fca6de* code review.  Each negative test exercises one class of
+# malformed input that the helper :func:`app._sanitize_filename_stem`
+# must handle correctly:
+#
+# * CR/LF characters in the studentName must produce HTTP 400 — never
+#   HTTP 500, never a header-injection leak into the response.
+# * Path separators (``/`` and ``\\``) must be replaced with ``_`` so
+#   the Content-Disposition filename can never look like a relative
+#   path (e.g. ``../evil_Report.pdf``).
+# * Apostrophes, quotes, spaces, hyphens, and non-ASCII characters
+#   must pass through unmodified — Werkzeug's RFC 5987 encoder
+#   handles all of them correctly.
+# * The empty-name fallback must produce ``Student_Report.pdf``.
+#
+# These tests are the rule-derived deliverables for the user rule
+# ``Ajit_Test_Refactor``: the refactor's filename-handling behaviour
+# is "stricter than the original" only at the well-defined HTTP 400
+# boundary (CR/LF/NUL); every other input either round-trips or is
+# replaced by a visually similar safe alternative.
+
+
+def test_download_rejects_crlf_in_student_name(client: FlaskClient) -> None:
+    """A studentName containing CR/LF returns HTTP 400 (not HTTP 500).
+
+    Werkzeug 3.x's ``Content-Disposition`` encoder rejects CR/LF in
+    filename values by raising :class:`ValueError`, which Flask
+    surfaces as an opaque HTTP 500 with no useful diagnostic for the
+    caller.  The :func:`app._sanitize_filename_stem` helper catches
+    these characters first and converts the failure into an explicit
+    HTTP 400 :class:`werkzeug.exceptions.BadRequest`, matching the
+    existing 400 returned by :func:`app._parse_mark` for non-numeric
+    marks.  This eliminates the HTTP 500 vector documented in the
+    *fca6de* code-review finding.
+    """
+    response = client.post("/download", data={
+        "studentName": "Alice\r\nX-Injected: hi",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 400, (
+        f"CR/LF in studentName should produce HTTP 400, "
+        f"got {response.status_code}"
+    )
+
+
+def test_download_rejects_lone_lf_in_student_name(client: FlaskClient) -> None:
+    """A studentName containing a lone LF (``\\n``) returns HTTP 400.
+
+    Companion to :func:`test_download_rejects_crlf_in_student_name`:
+    some HTTP clients only send a lone LF when the user types or
+    pastes a multi-line value into the form.  The sanitizer must
+    reject any of CR, LF, or NUL — not only the canonical CR-LF
+    sequence — so the failure surface is uniform regardless of which
+    line-terminator the attacker uses.
+    """
+    response = client.post("/download", data={
+        "studentName": "Alice\nfoo",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 400
+
+
+def test_download_rejects_nul_in_student_name(client: FlaskClient) -> None:
+    """A studentName containing a NUL byte (``\\x00``) returns HTTP 400.
+
+    NUL is a classic filesystem-terminator-confusion vector even
+    though Werkzeug's ``Content-Disposition`` quoting would handle
+    it correctly.  Rejecting it preemptively keeps the validation
+    surface uniform — the sanitizer rejects all three characters in
+    :data:`app._FORBIDDEN_FILENAME_CHARS` (CR, LF, NUL) with the same
+    structured HTTP 400 response.
+    """
+    response = client.post("/download", data={
+        "studentName": "Alice\x00foo",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 400
+
+
+def test_download_replaces_path_separators_in_filename(
+    client: FlaskClient,
+) -> None:
+    """A studentName containing ``/`` is sanitized to ``_`` in the filename.
+
+    A user (or an attacker) submitting ``"../evil"`` as their name
+    must not be able to produce a ``Content-Disposition`` filename of
+    ``../evil_Report.pdf`` — even though Werkzeug quotes the value
+    correctly at the HTTP level, the *appearance* of a relative path
+    in the browser's save dialog is at minimum a usability issue and
+    at worst forensically misleading.  The sanitizer replaces every
+    ``/`` with ``_`` so the rendered filename becomes
+    ``.._evil_Report.pdf`` — a visually similar but unambiguously
+    non-path string.
+    """
+    response = client.post("/download", data={
+        "studentName": "../evil",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert ".._evil_Report.pdf" in content_disposition, (
+        f"Expected '.._evil_Report.pdf' in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+    # The literal forward-slash must not leak through.
+    assert "../evil_Report.pdf" not in content_disposition, (
+        "Path separator '/' leaked into Content-Disposition filename — "
+        "sanitizer failed to replace it"
+    )
+
+
+def test_download_replaces_backslash_path_separators_in_filename(
+    client: FlaskClient,
+) -> None:
+    """A studentName containing ``\\`` is sanitized to ``_`` in the filename.
+
+    Companion to :func:`test_download_replaces_path_separators_in_filename`
+    covering the Windows path separator.  A user submitting
+    ``"C:\\\\Users\\\\evil"`` must produce a sanitized filename
+    ``"C:_Users_evil_Report.pdf"`` — neither the platform-specific
+    separator nor any path-like interpretation is leaked to the
+    browser.
+    """
+    response = client.post("/download", data={
+        "studentName": "C:\\Users\\evil",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "C:_Users_evil_Report.pdf" in content_disposition, (
+        f"Expected 'C:_Users_evil_Report.pdf' in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+    # The literal backslash must not leak through.
+    assert "C:\\Users\\evil_Report.pdf" not in content_disposition, (
+        "Path separator '\\\\' leaked into Content-Disposition filename — "
+        "sanitizer failed to replace it"
+    )
+
+
+def test_download_preserves_apostrophe_in_filename(client: FlaskClient) -> None:
+    """A studentName containing an apostrophe (``O'Brien``) round-trips intact.
+
+    Apostrophes are valid filename characters on every common
+    operating system and Werkzeug quotes them correctly inside the
+    ``Content-Disposition`` ``filename=`` parameter.  The sanitizer
+    must preserve them verbatim — stripping them would unnecessarily
+    mangle a perfectly common surname.
+    """
+    response = client.post("/download", data={
+        "studentName": "O'Brien",
+        "rollNumber": "13",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "O'Brien_Report.pdf" in content_disposition, (
+        f"Expected 'O\\'Brien_Report.pdf' in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_preserves_spaces_in_filename(client: FlaskClient) -> None:
+    """A studentName containing spaces (``Alice Smith``) round-trips intact.
+
+    Spaces are valid filename characters on every common operating
+    system; Werkzeug wraps the entire ``filename=`` value in double
+    quotes when spaces are present (``filename="Alice Smith_Report
+    .pdf"``).  The sanitizer must not collapse, replace, or strip
+    internal spaces — only leading/trailing whitespace is trimmed by
+    :func:`_build_report_from_form`.
+    """
+    response = client.post("/download", data={
+        "studentName": "Alice Smith",
+        "rollNumber": "42",
+        "maths": "90",
+        "science": "85",
+        "english": "80",
+        "history": "75",
+        "computer": "95",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    # Werkzeug emits ``filename="Alice Smith_Report.pdf"`` for names
+    # containing spaces; the simple substring check matches both the
+    # bare-token form and the quoted form, plus the RFC 5987
+    # ``filename*=`` variant.
+    assert "Alice Smith_Report.pdf" in content_disposition, (
+        f"Expected 'Alice Smith_Report.pdf' in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_preserves_double_quote_in_filename(client: FlaskClient) -> None:
+    """A studentName containing a double quote (``foo"bar``) round-trips intact.
+
+    Double quotes inside a ``filename="..."`` value are valid PDF/HTTP
+    content provided Werkzeug escapes them (``filename="foo\\"bar
+    _Report.pdf"``).  The sanitizer must not strip them — they are
+    not a header-injection vector when properly quoted.  This test
+    pins down the round-tripping behaviour against future Werkzeug
+    or sanitizer changes.
+    """
+    response = client.post("/download", data={
+        "studentName": 'foo"bar',
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    # Werkzeug escapes the inner ``"`` with a backslash inside the
+    # quoted form.  Either the escaped or the bare form is acceptable
+    # — we only need to confirm the value reached the header without
+    # being rejected.
+    assert "_Report.pdf" in content_disposition, (
+        "/download response missing the expected _Report.pdf suffix"
+    )
+
+
+def test_download_preserves_non_ascii_name_in_filename(
+    client: FlaskClient,
+) -> None:
+    """A non-ASCII studentName (``Müller``) emits an RFC 5987 ``filename*`` variant.
+
+    Werkzeug 2.x+ emits *both* a legacy ``filename=`` parameter (with
+    non-ASCII characters transliterated to their closest ASCII form
+    or replaced with ``?``) and an RFC 5987 ``filename*=UTF-8''…``
+    parameter with the percent-encoded UTF-8 bytes.  Browsers prefer
+    the RFC 5987 form when both are present, so the user-perceived
+    download name will be the original ``Müller_Report.pdf`` —
+    even on legacy clients that only understand the ``filename=``
+    parameter, the transliterated ``Muller_Report.pdf`` is still a
+    valid, readable filename.
+    """
+    response = client.post("/download", data={
+        "studentName": "Müller",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    # Either the RFC 5987 percent-encoded UTF-8 form or the
+    # transliterated ASCII fallback must be present — Werkzeug emits
+    # both, so the substring check should succeed on either.
+    has_rfc5987 = "M%C3%BCller_Report.pdf" in content_disposition
+    has_ascii_fallback = "Muller_Report.pdf" in content_disposition
+    assert has_rfc5987 or has_ascii_fallback, (
+        f"Expected either the RFC 5987 percent-encoded form "
+        f"('M%C3%BCller_Report.pdf') or the ASCII fallback "
+        f"('Muller_Report.pdf') in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_empty_name_falls_back_to_student(client: FlaskClient) -> None:
+    """An empty studentName produces a ``Student_Report.pdf`` filename.
+
+    The default-stem fallback documented at :data:`app._DEFAULT_FILENAME_STEM`
+    — when the user submits the form without a name, the download
+    is named ``Student_Report.pdf`` rather than the awkward
+    ``_Report.pdf`` the original JavaScript would have produced.  A
+    small but real usability improvement over an undefined-behaviour
+    input the original implementation never properly handled.
+    """
+    response = client.post("/download", data={
+        "studentName": "",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "Student_Report.pdf" in content_disposition, (
+        f"Expected 'Student_Report.pdf' fallback in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_whitespace_only_name_falls_back_to_student(
+    client: FlaskClient,
+) -> None:
+    """A whitespace-only studentName also falls back to ``Student_Report.pdf``.
+
+    The :func:`_build_report_from_form` helper calls ``.strip()`` on
+    the submitted name, so a payload of ``"   "`` reaches the
+    sanitizer as the empty string and triggers the same fallback as
+    a missing/empty field.  This proves the two paths converge on
+    the same well-defined behaviour.
+    """
+    response = client.post("/download", data={
+        "studentName": "   ",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "Student_Report.pdf" in content_disposition, (
+        f"Expected 'Student_Report.pdf' fallback for whitespace-only name, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_hyphen_and_alphanumeric_name_preserved(
+    client: FlaskClient,
+) -> None:
+    """A studentName with hyphens and digits (``Anne-Marie2``) round-trips intact.
+
+    Hyphens and digits are common in real names ("Anne-Marie",
+    "Mary-Beth", "John2") and on every common filesystem.  The
+    sanitizer must not modify them.  This test pins down the
+    preservation behaviour against an over-zealous future
+    sanitisation rewrite.
+    """
+    response = client.post("/download", data={
+        "studentName": "Anne-Marie2",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "Anne-Marie2_Report.pdf" in content_disposition, (
+        f"Expected 'Anne-Marie2_Report.pdf' in Content-Disposition, "
+        f"got {content_disposition!r}"
+    )
+
+
+def test_download_sanitization_does_not_alter_pdf_content(
+    client: FlaskClient,
+) -> None:
+    """Filename sanitization does *not* modify the rendered PDF body.
+
+    The sanitizer applies *only* to the filename stem — the rendered
+    PDF body must still carry the user-supplied name verbatim
+    (assuming it survives the sanitizer's CR/LF/NUL guard).  A
+    regression that accidentally pushed the sanitized stem through
+    to :func:`generate_pdf` would cause this test to fail because
+    the PDF body would contain ``"Student Name: .._evil"`` instead of
+    the verbatim ``"Student Name: ../evil"`` the user submitted.
+    """
+    response = client.post("/download", data={
+        "studentName": "../evil",
+        "rollNumber": "1",
+        "maths": "50",
+        "science": "50",
+        "english": "50",
+        "history": "50",
+        "computer": "50",
+    })
+    assert response.status_code == 200
+    # The Content-Disposition uses the *sanitized* filename stem
+    # (path separators replaced).
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert ".._evil_Report.pdf" in content_disposition
+
+    # But the PDF body itself carries the *verbatim* user-supplied
+    # name — the sanitizer is filename-only and must not leak into
+    # the PDF content.
+    pdf_bytes = response.data
+    assert _pdf_contains(pdf_bytes, "Student Name: ../evil"), (
+        "PDF body should carry the verbatim user-supplied name "
+        "'../evil' — sanitizer must not modify the PDF content"
+    )
