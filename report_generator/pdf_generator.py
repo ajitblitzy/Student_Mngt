@@ -1,4 +1,4 @@
-"""PDF generation using ReportLab, replacing the original jsPDF implementation.
+"""PDF generation using ReportLab, replacing the original browser-side JavaScript implementation.
 
 This module is the *presentation* layer of the :mod:`report_generator`
 package.  Its single public function, :func:`generate_pdf`, accepts a fully
@@ -9,24 +9,25 @@ of the original ``downloadPDF()`` JavaScript function (``Readme.md`` lines
 
 Coordinate-system reconciliation (per AAP §0.6.1)
 -------------------------------------------------
-The original implementation used `jsPDF` v2.5.1 with its default settings;
-ReportLab 4.5.1 uses different defaults.  Visual parity therefore requires
-an explicit coordinate translation on every drawing call:
+The original implementation used a browser-side PDF library with its
+default top-left, millimetre-based coordinate system; ReportLab 4.5.1
+uses different defaults.  Visual parity therefore requires an explicit
+coordinate translation on every drawing call:
 
-* **jsPDF default**: origin at top-left corner, Y axis increases
-  *downward*, units in millimetres (``mm``), default page A4 portrait
-  (210 × 297 mm).
+* **Source defaults** (original top-left millimetre coordinate system):
+  origin at top-left corner, Y axis increases *downward*, units in
+  millimetres (``mm``), default page A4 portrait (210 × 297 mm).
 * **ReportLab default**: origin at bottom-left corner, Y axis increases
   *upward*, units in points (1 pt = 1/72 inch), A4 portrait expressed as
   (595.28 × 841.89 pt) — the same physical paper.
 * **Translation rule**::
 
-      reportlab_y_pt = (page_height_mm - jspdf_y_mm) * mm
+      reportlab_y_pt = (page_height_mm - source_y_mm) * mm
 
   where ``mm`` is :data:`reportlab.lib.units.mm` (≈ 2.834645669 pt/mm)
   and ``page_height_mm`` is :data:`PAGE_HEIGHT_MM` (= 297 for A4
   portrait).  The private helper :func:`_y` encapsulates this rule so the
-  body of :func:`generate_pdf` reads exactly like the original jsPDF
+  body of :func:`generate_pdf` reads exactly like the original JavaScript
   source, modulo the syntactic differences between JavaScript and Python.
 
 Design notes
@@ -36,10 +37,10 @@ Design notes
     to disk (per AAP §0.3.3).  The caller (``app.py``'s ``/download``
     route) wraps these bytes in a fresh :class:`~io.BytesIO` for
     :func:`flask.send_file`.
-*   Both jsPDF and ReportLab ship Helvetica as a *standard* PDF Type 1
-    font (part of the PDF 1.4 specification, no font-file embedding
-    required).  Character glyph rendering is therefore byte-for-byte
-    equivalent between the two implementations.
+*   Both the original PDF library and ReportLab ship Helvetica as a
+    *standard* PDF Type 1 font (part of the PDF 1.4 specification, no
+    font-file embedding required).  Character glyph rendering is
+    therefore byte-for-byte equivalent between the two implementations.
 *   The percentage value is formatted with the ``:.2f`` f-string spec to
     match the original JavaScript ``.toFixed(2)`` at ``Readme.md`` line
     211 — preserving exactly two decimal places.  This is a hard
@@ -74,11 +75,11 @@ from .models import StudentReport
 PAGE_HEIGHT_MM: int = 297  # A4 portrait height in mm
 """A4 portrait page height in millimetres.
 
-Used by :func:`_y` to convert jsPDF top-left Y coordinates (measured
+Used by :func:`_y` to convert source top-left Y coordinates (measured
 *downward* from the top of the page) into ReportLab bottom-left Y
 coordinates (measured *upward* from the bottom of the page).  ReportLab's
 own :data:`reportlab.lib.pagesizes.A4` constant is in *points*; we keep
-the height available in *millimetres* here because the original jsPDF
+the height available in *millimetres* here because the original source
 coordinates are also in millimetres, which keeps the translation
 arithmetic readable.
 """
@@ -108,27 +109,27 @@ JavaScript at ``Readme.md`` line 229.  Naming the constant honours the
 # ---------------------------------------------------------------------------
 
 
-def _y(jspdf_y_mm: float) -> float:
-    """Translate a jsPDF top-left mm Y-coordinate to a ReportLab bottom-left pt Y-coordinate.
+def _y(source_y_mm: float) -> float:
+    """Translate a source top-left mm Y-coordinate to a ReportLab bottom-left pt Y-coordinate.
 
     This is the core coordinate-system reconciliation routine documented at
     AAP §0.6.1.  It performs two operations in a single expression:
 
     1.  *Axis inversion* — subtracts the supplied Y from
         :data:`PAGE_HEIGHT_MM` to flip the origin from the top of the page
-        (jsPDF) to the bottom (ReportLab).
+        (source coordinate system) to the bottom (ReportLab).
     2.  *Unit conversion* — multiplies by :data:`reportlab.lib.units.mm`
         (= 2.834645669 pt/mm) to convert millimetres to PDF points.
 
     Parameters
     ----------
-    jspdf_y_mm:
+    source_y_mm:
         Y coordinate in millimetres measured from the top of the page, as
-        the original JavaScript expressed it.  May be any non-negative
-        :class:`float` or :class:`int` ≤ :data:`PAGE_HEIGHT_MM`; values
-        outside this range produce a coordinate off the visible page,
-        which is the same behaviour the original jsPDF code would
-        exhibit.
+        the original JavaScript expressed it (i.e. an original top-left
+        millimetre coordinate).  May be any non-negative :class:`float` or
+        :class:`int` ≤ :data:`PAGE_HEIGHT_MM`; values outside this range
+        produce a coordinate off the visible page, which is the same
+        behaviour the original code would exhibit.
 
     Returns
     -------
@@ -139,12 +140,12 @@ def _y(jspdf_y_mm: float) -> float:
 
     Examples
     --------
-    >>> round(_y(20), 2)        # jsPDF y=20 mm from top  -> top of body area
+    >>> round(_y(20), 2)        # source y=20 mm from top  -> top of body area
     785.18
-    >>> round(_y(80), 2)        # jsPDF y=80 mm from top  -> bottom-most line
+    >>> round(_y(80), 2)        # source y=80 mm from top  -> bottom-most line
     615.12
     """
-    return (PAGE_HEIGHT_MM - jspdf_y_mm) * mm
+    return (PAGE_HEIGHT_MM - source_y_mm) * mm
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +156,15 @@ def _y(jspdf_y_mm: float) -> float:
 def generate_pdf(report: StudentReport) -> bytes:
     """Render a :class:`StudentReport` as a PDF byte string.
 
-    The PDF layout reproduces the original jsPDF implementation at
+    The PDF layout reproduces the original JavaScript implementation at
     ``Readme.md`` lines 215–237 *exactly*:
 
     *   Page format: A4 portrait (210 × 297 mm; 595 × 842 pt).
     *   Font family: Helvetica (a built-in PDF Type 1 font requiring no
         embedding).
-    *   Title ``"Student Report Card"`` drawn at jsPDF coordinates
+    *   Title ``"Student Report Card"`` drawn at source coordinates
         (20 mm, 20 mm from top) in 18 pt.
-    *   Five body lines drawn at jsPDF coordinates
+    *   Five body lines drawn at source coordinates
         (20 mm, 40/50/60/70/80 mm from top) in 12 pt:
 
         1.  ``Student Name: <name>``
@@ -201,12 +202,12 @@ def generate_pdf(report: StudentReport) -> bytes:
     c = canvas.Canvas(buffer, pagesize=A4)
 
     # ---- Title ----------------------------------------------------------
-    # Matches jsPDF:  doc.setFontSize(18); doc.text('Student Report Card', 20, 20);
+    # Matches original JavaScript:  doc.setFontSize(18); doc.text('Student Report Card', 20, 20);
     c.setFont("Helvetica", TITLE_FONT_SIZE)
     c.drawString(20 * mm, _y(20), "Student Report Card")
 
     # ---- Body lines -----------------------------------------------------
-    # Matches jsPDF:  doc.setFontSize(12); doc.text(..., 20, <40|50|60|70|80>);
+    # Matches original JavaScript:  doc.setFontSize(12); doc.text(..., 20, <40|50|60|70|80>);
     c.setFont("Helvetica", BODY_FONT_SIZE)
     c.drawString(20 * mm, _y(40), f"Student Name: {report.input.name}")
     c.drawString(20 * mm, _y(50), f"Roll Number: {report.input.roll}")
