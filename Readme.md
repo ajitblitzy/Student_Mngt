@@ -37,6 +37,7 @@ Student_Mngt/
 - Enter student details
 - Calculate percentage automatically
 - Generate grade
+- Render the student report card on screen with total marks, percentage, and grade
 - Download report as PDF
 - Responsive UI
 
@@ -47,7 +48,7 @@ Student_Mngt/
 - Python 3.12
 - Flask 3.1.x (WSGI web framework)
 - Jinja2 (bundled with Flask, used for HTML templating)
-- fpdf2 2.8.x (server-side PDF generation, replaces jsPDF)
+- fpdf2 2.8.x (server-side PDF generation)
 - HTML5
 - CSS3
 

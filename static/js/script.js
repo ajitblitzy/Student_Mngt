@@ -3,8 +3,8 @@
  *
  * Thin client-side helper for the Flask-based Student Report Generator
  * application. All business logic that originally lived in this file
- * (computing total/percentage/grade in generateReport(); generating a
- * downloadable PDF via jsPDF in downloadPDF()) has been moved to the
+ * (computing total/percentage/grade in generateReport(); building a
+ * downloadable report in downloadPDF()) has been moved to the
  * Python server (app.py + fpdf2). This file contains ONLY:
  *
  *   1. A submit-event listener on #reportForm that intercepts the
@@ -24,7 +24,7 @@
  *
  * Uses only browser-native APIs: fetch, FormData, DOMParser,
  * addEventListener, getElementById, querySelector. No external
- * libraries (no jQuery, no jsPDF, no framework). The application
+ * libraries (no jQuery, no third-party frameworks). The application
  * also degrades gracefully without JavaScript: both forms have
  * native action/method attributes so they submit normally if this
  * script fails to load or is disabled.
@@ -37,9 +37,9 @@
  *     "{name}_Report.pdf" via Content-Disposition: attachment.
  *
  * The original script.js (browser-side ECMAScript using ES5 + a
- * small set of ES6 features, loaded jsPDF v2.5.1 from cdnjs) is
- * preserved verbatim inside Student Report Generator Javascript
- * Pdf.pdf at the repository root for historical reference.
+ * small set of ES6 features) is preserved verbatim inside
+ * Student Report Generator Javascript Pdf.pdf at the repository
+ * root for historical reference.
  */
 
 (function () {
@@ -182,7 +182,7 @@
      * natively after this handler returns. The server response is a
      * PDF binary with a Content-Disposition: attachment header that
      * the browser then saves as "{name}_Report.pdf", reproducing
-     * the original jsPDF doc.save() user experience.
+     * the original client-side download user experience.
      */
     window.downloadPDF = function (event) {
         // Intentionally empty - browser handles the form submission.
