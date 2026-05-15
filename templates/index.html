@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Report Generator</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container">
+    <h1>Student Report Generator</h1>
+
+    <form method="POST">
+        <div class="form-section">
+            <input type="text" name="studentName" id="studentName" placeholder="Student Name" value="{{ report.input.name if report else '' }}">
+            <input type="text" name="rollNumber" id="rollNumber" placeholder="Roll Number" value="{{ report.input.roll if report else '' }}">
+
+            <input type="number" name="maths" id="maths" placeholder="Maths Marks" value="{{ report.input.marks['Maths'] if report else '' }}">
+            <input type="number" name="science" id="science" placeholder="Science Marks" value="{{ report.input.marks['Science'] if report else '' }}">
+            <input type="number" name="english" id="english" placeholder="English Marks" value="{{ report.input.marks['English'] if report else '' }}">
+            <input type="number" name="history" id="history" placeholder="History Marks" value="{{ report.input.marks['History'] if report else '' }}">
+            <input type="number" name="computer" id="computer" placeholder="Computer Marks" value="{{ report.input.marks['Computer'] if report else '' }}">
+
+            <button type="submit" formaction="/generate">Generate Report</button>
+            <button type="submit" formaction="/download">Download PDF</button>
+        </div>
+    </form>
+
+    {% if report %}
+    <div id="reportCard" class="report-card">
+        <h2>Student Report</h2>
+
+        <p><strong>Name:</strong> <span id="rName">{{ report.input.name }}</span></p>
+        <p><strong>Roll Number:</strong> <span id="rRoll">{{ report.input.roll }}</span></p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Subject</th>
+                    <th>Marks</th>
+                </tr>
+            </thead>
+            <tbody id="marksTable">
+                {% for subject, marks in report.input.marks.items() %}
+                <tr>
+                    <td>{{ subject }}</td>
+                    <td>{{ marks }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <p><strong>Total:</strong> <span id="totalMarks">{{ report.total }}</span></p>
+        <p><strong>Percentage:</strong> <span id="percentage">{{ "%.2f"|format(report.percentage) }}</span>%</p>
+        <p><strong>Grade:</strong> <span id="grade">{{ report.grade }}</span></p>
+    </div>
+    {% endif %}
+</div>
+
+</body>
+</html>
