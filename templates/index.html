@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Report Generator</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<div class="container">
+    <h1>Student Report Generator</h1>
+
+    <form class="form-section" action="/generate-report" method="post" id="reportForm">
+        <input type="text" id="studentName" name="studentName" placeholder="Student Name" aria-label="Student Name">
+        <input type="text" id="rollNumber" name="rollNumber" placeholder="Roll Number" aria-label="Roll Number">
+
+        <input type="number" id="maths" name="maths" placeholder="Maths Marks" aria-label="Maths Marks">
+        <input type="number" id="science" name="science" placeholder="Science Marks" aria-label="Science Marks">
+        <input type="number" id="english" name="english" placeholder="English Marks" aria-label="English Marks">
+        <input type="number" id="history" name="history" placeholder="History Marks" aria-label="History Marks">
+        <input type="number" id="computer" name="computer" placeholder="Computer Marks" aria-label="Computer Marks">
+
+        <button type="submit" onclick="generateReport()">Generate Report</button>
+        <button type="submit" form="downloadForm" onclick="downloadPDF()">Download PDF</button>
+    </form>
+
+    <div id="reportCard" class="report-card">
+        <h2>Student Report</h2>
+
+        <p><strong>Name:</strong> <span id="rName">{{ report.name if report else '' }}</span></p>
+        <p><strong>Roll Number:</strong> <span id="rRoll">{{ report.roll if report else '' }}</span></p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Subject</th>
+                    <th>Marks</th>
+                </tr>
+            </thead>
+            <tbody id="marksTable">
+                {% if report %}
+                {% for subject, marks in report.subjects %}
+                <tr>
+                    <td>{{ subject }}</td>
+                    <td>{{ marks }}</td>
+                </tr>
+                {% endfor %}
+                {% endif %}
+            </tbody>
+        </table>
+
+        <p><strong>Total:</strong> <span id="totalMarks">{{ report.total if report else '' }}</span></p>
+        <p><strong>Percentage:</strong> <span id="percentage">{{ report.percentage_str if report else '' }}</span>%</p>
+        <p><strong>Grade:</strong> <span id="grade">{{ report.grade if report else '' }}</span></p>
+    </div>
+
+    <form action="/download-pdf" method="post" id="downloadForm">
+        <input type="hidden" name="name" value="{{ report.name if report else '' }}">
+        <input type="hidden" name="roll" value="{{ report.roll if report else '' }}">
+        <input type="hidden" name="total" value="{{ report.total if report else '' }}">
+        <input type="hidden" name="percentage_str" value="{{ report.percentage_str if report else '' }}">
+        <input type="hidden" name="grade" value="{{ report.grade if report else '' }}">
+    </form>
+</div>
+
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+</body>
+</html>

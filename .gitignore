@@ -1,0 +1,36 @@
+# .gitignore for the Student Report Generator (Python 3 / Flask refactor)
+#
+# Keeps Python build artifacts, virtual environments, test caches, and editor
+# folders out of version control. Scope is intentionally limited to Python +
+# common editor hygiene; no Node/Java/Rust/Go patterns are included because
+# this project is Python-only (see AAP Section 0.5.1).
+
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg
+*.egg-info/
+
+# Testing and coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE / editor folders
+.idea/
+.vscode/
+
+# Logs
+*.log
