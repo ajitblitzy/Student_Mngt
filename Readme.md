@@ -6,6 +6,35 @@ This project allows users to:
 - Calculate total marks and percentage
 - Generate a formatted student report
 - Export the report as a PDF file
+- Record **non-academic / co-curricular activities** (Sports, Elocution, Drama), reported separately from the academic marks
+
+> The report now also presents non-academic / co-curricular activities alongside the academic results. For the full walkthrough, see the [Non-Academic Activities guide](docs/non-academic-activities.md).
+
+---
+
+## Data Flow
+
+The end-to-end flow runs from the form inputs through `generateReport()` to the on-screen report card, and finally to the exported PDF via `downloadPDF()`. The non-academic / co-curricular activities follow their own path into the report card and the PDF, in parallel with the academic marks, without affecting the academic score. Source: Readme.md:L223-L339
+
+```mermaid
+flowchart TB
+    User([User])
+    subgraph Form[Form Inputs]
+      Acad[Academic marks - 5 subjects]
+      Acts[Activity fields - Sports Elocution Drama]
+    end
+    GR[generateReport]
+    Calc[Total + Percentage + Grade]
+    ActMap[Activities map]
+    Card[Report Card - marks table and activities table]
+    DL[downloadPDF]
+    PDF([Downloaded PDF including activities])
+    User --> Acad --> GR
+    User --> Acts --> GR
+    GR --> Calc --> Card
+    GR --> ActMap --> Card
+    Card --> DL --> PDF
+```
 
 ---
 
@@ -19,6 +48,8 @@ student-report-generator/
 ├── script.js
 └── README.md
 ```
+
+> **Reference artifact.** The repository also contains `Student Report Generator Javascript Pdf.pdf` — a rendered (generated) copy of this README, kept for reference only. It is not part of the application file structure shown above and becomes stale once the non-academic / co-curricular activities feature is documented here; regenerate it after the feature's documentation and source are finalized. The binary itself is left unchanged in this update.
 
 ---
 
@@ -52,6 +83,11 @@ student-report-generator/
         <input type="number" id="history" placeholder="History Marks">
         <input type="number" id="computer" placeholder="Computer Marks">
 
+        <!-- Non-academic / co-curricular activities (free-text, non-scoring) -->
+        <input type="text" id="sports" placeholder="Sports (e.g., Winner - District)">
+        <input type="text" id="elocution" placeholder="Elocution (e.g., Participated)">
+        <input type="text" id="drama" placeholder="Drama (e.g., Best Actor - School)">
+
         <button onclick="generateReport()">Generate Report</button>
         <button onclick="downloadPDF()">Download PDF</button>
     </div>
@@ -75,6 +111,17 @@ student-report-generator/
         <p><strong>Total:</strong> <span id="totalMarks"></span></p>
         <p><strong>Percentage:</strong> <span id="percentage"></span>%</p>
         <p><strong>Grade:</strong> <span id="grade"></span></p>
+
+        <h3>Co-Curricular / Non-Academic Activities</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Activity</th>
+                    <th>Participation / Achievement</th>
+                </tr>
+            </thead>
+            <tbody id="activitiesTable"></tbody>
+        </table>
     </div>
 </div>
 
@@ -83,6 +130,16 @@ student-report-generator/
 </body>
 </html>
 ```
+
+**New activity inputs (Source: Readme.md:L87-L89).** Three free-text inputs are added to the `form-section`, after the five subject fields and before the buttons. They accept free-text participation / achievement descriptors:
+
+| Input ID | Placeholder | Example value |
+|---|---|---|
+| `#sports` | `Sports (e.g., Winner - District)` | `Winner - District` |
+| `#elocution` | `Elocution (e.g., Participated)` | `Participated` |
+| `#drama` | `Drama (e.g., Best Actor - School)` | `Best Actor - School` |
+
+Inside `#reportCard`, a clearly separated **Co-Curricular / Non-Academic Activities** section is rendered after the grade line so the academic summary stays first. Its table body has id `#activitiesTable` and is populated by `generateReport()`.
 
 ---
 
@@ -154,6 +211,10 @@ th, td {
 }
 ```
 
+**Styling the new activity surface (Source: Readme.md:L149-L211).** No new CSS is required — the activity inputs and the activities table reuse the existing rules. The generic `input` selector (Source: Readme.md:L175-L178) styles the three text inputs, the `.form-section` grid (Source: Readme.md:L169-L173) automatically lays them out alongside the subject fields, and the generic `table`, `table, th, td`, and `th, td` rules (Source: Readme.md:L198-L211) style the activities table exactly like the marks table.
+
+> Optional: the new `<h3>` activities heading is not centered by default. To match `h1, h2`, you may extend the existing centering rule (Source: Readme.md:L165-L167) to `h1, h2, h3`. This is optional and no other CSS changes are needed.
+
 ---
 
 # script.js
@@ -210,6 +271,35 @@ function generateReport() {
     document.getElementById('totalMarks').innerText = total;
     document.getElementById('percentage').innerText = percentage.toFixed(2);
     document.getElementById('grade').innerText = grade;
+
+    // Collect non-academic / co-curricular activities (free-text, non-scoring).
+    // NOTE: these values are NOT added to `total` and do NOT affect `percentage` or `grade`.
+    const activities = {
+        Sports: document.getElementById('sports').value,
+        Elocution: document.getElementById('elocution').value,
+        Drama: document.getElementById('drama').value
+    };
+
+    const activitiesBody = document.getElementById('activitiesTable');
+    activitiesBody.innerHTML = '';
+
+    for (let activity in activities) {
+        // Activity values are free-text, so build each row with DOM APIs and
+        // assign the text via textContent. The values are therefore rendered
+        // as plain text and never parsed as HTML, preventing script/markup
+        // injection in the report card.
+        const row = document.createElement('tr');
+
+        const activityCell = document.createElement('td');
+        activityCell.textContent = activity;
+
+        const valueCell = document.createElement('td');
+        valueCell.textContent = activities[activity];
+
+        row.appendChild(activityCell);
+        row.appendChild(valueCell);
+        activitiesBody.appendChild(row);
+    }
 }
 
 function downloadPDF() {
@@ -233,9 +323,29 @@ function downloadPDF() {
     doc.text(`Percentage: ${percentage}%`, 20, 70);
     doc.text(`Grade: ${grade}`, 20, 80);
 
+    // Append non-academic / co-curricular activities below the grade line,
+    // continuing the existing 10-unit vertical spacing. Informational only;
+    // they do not affect the academic score.
+    const sports = document.getElementById('sports').value;
+    const elocution = document.getElementById('elocution').value;
+    const drama = document.getElementById('drama').value;
+
+    doc.text('Non-Academic / Co-Curricular Activities', 20, 95);
+    doc.text(`Sports: ${sports}`, 20, 105);
+    doc.text(`Elocution: ${elocution}`, 20, 115);
+    doc.text(`Drama: ${drama}`, 20, 125);
+
     doc.save(`${name}_Report.pdf`);
 }
 ```
+
+**How activities are processed (Source: Readme.md:L223-L339).** In `generateReport()`, after the academic marks are summed and the report card is written, the three activity fields are collected into a small `activities` map and rendered into the `#activitiesTable` body (Source: Readme.md:L277-L302). Because the activity values are **free-text**, each row is built with `document.createElement(...)` and its cell text is assigned via `textContent` (Source: Readme.md:L286-L302) — never by interpolating the values into an HTML string. The values are therefore rendered literally and are **never parsed as HTML**, which prevents script/markup injection in the report card. (The academic marks loop, by contrast, renders only numeric subject values and is left unchanged; Source: Readme.md:L240-L251.)
+
+> **Non-scoring behavior (important).** The `activities` map is **never** added to `total`. The academic calculation is unchanged: `percentage = (total / 500) * 100` (Source: Readme.md:L253) and the six-tier grade ladder — **A+ ≥ 90, A ≥ 80, B ≥ 70, C ≥ 60, D ≥ 50, else F** (Source: Readme.md:L255-L267) — remain exactly as before. Activities are reported separately and do **not** affect the percentage or the grade.
+
+In `downloadPDF()`, the same three values are read and appended to the exported PDF **below the grade line** (which sits at y = 80, Source: Readme.md:L324), continuing the existing 10-unit vertical spacing via `doc.text(...)` (provided by jsPDF **2.5.1**, Source: Readme.md:L69, L316-L336). The document is still saved last via `doc.save(...)`, producing `${name}_Report.pdf` (Source: Readme.md:L338).
+
+See the [Non-Academic Activities guide](docs/non-academic-activities.md) for a worked example and troubleshooting notes.
 
 ---
 
@@ -249,6 +359,7 @@ function downloadPDF() {
 - Enter student details
 - Calculate percentage automatically
 - Generate grade
+- Record non-academic / co-curricular activities (Sports, Elocution, Drama)
 - Download report as PDF
 - Responsive UI
 
@@ -264,13 +375,16 @@ function downloadPDF() {
 1. Download the project
 2. Open `index.html` in browser
 3. Enter student details
-4. Click Generate Report
-5. Click Download PDF
+4. Enter non-academic / co-curricular activities (Sports, Elocution, Drama)
+5. Click Generate Report
+6. Click Download PDF
 ```
 
 ---
 
 # Future Enhancements
+
+> **Update:** This roadmap is now *partially realized* — recording of non-academic / co-curricular activities (Sports, Elocution, Drama) has been added to the student report and the exported PDF. The items below remain planned. See the [Non-Academic Activities guide](docs/non-academic-activities.md).
 
 - Add database support
 - Add multiple student report management
