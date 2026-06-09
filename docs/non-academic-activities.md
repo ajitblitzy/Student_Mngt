@@ -14,7 +14,7 @@ This feature extends that report so it **also** presents **non-academic / co-cur
 
 **Why this matters.** Recording co-curricular participation and achievement gives a fuller picture of a student than marks alone, while keeping that information visually and logically distinct from the academic score.
 
-> **A note on terminology.** The original request asked for *"non acedemic activities such as sports, elucation, drama participation"*. The word **"elucation"** is interpreted throughout this project as **Elocution**. Authored prose below uses the correct spellings (academic, performance, Elocution); the original wording is preserved only in that direct quote.
+> **A note on terminology.** The original request was: *"Check the code of the project and add the feature to generate the report of student academic perfromance which includes non acedemic activities such as sports, elucation, drama participation"*. The word **"elucation"** is interpreted throughout this project as **Elocution**. Authored prose below uses the correct spellings (academic, performance, Elocution); the original wording — including the original misspellings — is preserved only in that direct quote.
 
 For the academic baseline and the full embedded source, see the main project README: [Student Report Generator README](../Readme.md).
 
